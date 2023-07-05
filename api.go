@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/diorchen/rest-server/internal/groceryItemStore"
+	"github.com/diorchen/rest-server/internal/middleware"
 )
 
 type foodServer struct {
@@ -21,9 +22,10 @@ type foodServer struct {
 }
  // Creates a new instance of FoodServer
 func NewFoodServer() *foodServer {
-	store := groceryItemStore.New()
+	store := groceryItemStore.New() 
 	return &foodServer{groceryItemStore: store}
 }
+
 // Handles incoming HTTP requests related to food items
 func (fs *foodServer) foodHandler(w http.ResponseWriter, req *http.Request) {
 	if req.URL.Path == "/food/" { 
@@ -233,8 +235,12 @@ func main() {
 	server := NewFoodServer() // Creates new instance of FoodServer
 	mux.HandleFunc("/food/", server.foodHandler)
 	mux.HandleFunc("/ing", server.ingHandler)
-	mux.HandleFunc("/exp", server.expHandler)
-	http.ListenAndServe("localhost:8080", mux)
-	fmt.Println("Running Server at port 8080")
+	mux.HandleFunc("/exp", server.expHandler)	
+
+	handler := middleware.Logging(mux)
+	handler = middleware.PanicRecovery(handler)
+
+	log.Fatal(http.ListenAndServe("localhost:8080", mux), handler)
+
 }
 
