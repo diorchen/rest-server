@@ -4,17 +4,23 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"mime"     //  Multipurpose Internet Mail Extensions (MIME) type detection and extensions
 	"net/http" // HTTP client and server implementations
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/diorchen/rest-server/internal/groceryItemStore"
 	"github.com/diorchen/rest-server/internal/middleware"
+
+	"github.com/gorilla/handlers"
+	"github.com/gorilla/mux"
 )
 
 type foodServer struct {
@@ -48,16 +54,16 @@ func (fs *foodServer) foodHandler(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "expect /food/<id> in food handler", http.StatusBadRequest)
 			return
 		}
-		id, err := strconv.Atoi(pathParts[1]) // converts the string into integer
+		_, err := strconv.Atoi(pathParts[1]) // converts the string into integer
 		if err != nil { // checks if there is an error during this conversion
 			http.Error(w, err.Error(), http.StatusBadRequest) // return error
 			return
 		}
 
 		if req.Method == http.MethodDelete { // checks the HTTP method and performs the corresponding action
-			fs.deleteFoodHandler(w, req, id)
+			fs.deleteFoodHandler(w, req)
 		} else if req.Method == http.MethodGet {
-			fs.getFoodHandler(w, req, id)
+			fs.getFoodHandler(w, req)
 		} else {
 			http.Error(w, fmt.Sprintf("expect method GET or DELETE at /food/<id>, got %v", req.Method), http.StatusMethodNotAllowed)
 			return
@@ -127,7 +133,12 @@ func (fs *foodServer) getAllFoodHandler(w http.ResponseWriter, req *http.Request
 	w.Write(js)
 }
 
-func (fs *foodServer) getFoodHandler(w http.ResponseWriter, req *http.Request, id int) {
+func (fs *foodServer) getFoodHandler(w http.ResponseWriter, req *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(req)["id"]) // extract ID from URL path and convert to int
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return 
+	}
 	log.Printf("handling get food item at %s\n", req.URL.Path)
 
 	food, err := fs.groceryItemStore.GetFood(id)
@@ -145,10 +156,14 @@ func (fs *foodServer) getFoodHandler(w http.ResponseWriter, req *http.Request, i
 	w.Write(js)
 }
 
-func (fs *foodServer) deleteFoodHandler(w http.ResponseWriter, req *http.Request, id int) {
+func (fs *foodServer) deleteFoodHandler(w http.ResponseWriter, req *http.Request) {
 	log.Printf("handling deletion of food item at %s\n", req.URL.Path)
+	id, err := strconv.Atoi(mux.Vars(req)["id"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+	}
 
-	err := fs.groceryItemStore.DeleteFood(id)
+	err = fs.groceryItemStore.DeleteFood(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 	}
@@ -231,16 +246,47 @@ func (fs *foodServer) expHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func main() {
-	mux := http.NewServeMux() // Creates new instance of HTTP request multiplexer
+	certFile := flag.String("certfile", "cert.pem", "certificate PEM file")
+	keyFile := flag.String("keyfile", "key.pem", "key PEM file")
+	flag.Parse()
+
+	router := mux.NewRouter()
+	router.StrictSlash(true)
 	server := NewFoodServer() // Creates new instance of FoodServer
-	mux.HandleFunc("/food/", server.foodHandler)
-	mux.HandleFunc("/ing", server.ingHandler)
-	mux.HandleFunc("/exp", server.expHandler)	
+	
 
-	handler := middleware.Logging(mux)
-	handler = middleware.PanicRecovery(handler)
+	router.Handle("/food/", middleware.BasicAuth(http.HandlerFunc(server.createFoodHandler))).Methods("POST")
+	router.HandleFunc("/food/", server.getAllFoodHandler).Methods("GET")
+	router.HandleFunc("/food/", server.deleteAllFoodHandler).Methods("DELETE")
+	router.HandleFunc("/food/{id:[0-9]+}/", server.deleteFoodHandler).Methods("DELETE")
+	router.HandleFunc("/food/{id:[0-9]+}/", server.getFoodHandler).Methods("GET")
+	router.HandleFunc("/ing/{ing}/", server.ingHandler).Methods("GET")
+	router.HandleFunc("/exp/{year:[0-9]+}/{month:[0-9]+}/{day:[0-9]+}/", server.expHandler).Methods("GET")
 
-	log.Fatal(http.ListenAndServe("localhost:8080", mux), handler)
+	// router.HandleFunc("/food/", server.foodHandler)
+	// router.HandleFunc("/ing/", server.ingHandler)
+	// router.HandleFunc("/exp/", server.expHandler)
+
+	// Set up logging and panic recovery middleware.
+	router.Use(func(h http.Handler) http.Handler {
+		return handlers.LoggingHandler(os.Stdout, h)
+	})
+	router.Use(handlers.RecoveryHandler(handlers.PrintRecoveryStack(true)))
+
+	addr := "localhost:8080"
+	srv := &http.Server{
+		Addr: 	addr,
+		Handler: router,
+		TLSConfig: &tls.Config{
+			MinVersion:	tls.VersionTLS13,
+			PreferServerCipherSuites: true,
+		},
+	}
+
+	log.Printf("Starting server on %s", addr)
+	// http.ListenAndServe("localhost:8080", router)
+	log.Fatal(srv.ListenAndServeTLS(*certFile, *keyFile))
+
 
 }
 
